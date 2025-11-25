@@ -4,7 +4,7 @@ A Chrome extension + local backend that generates AI-powered summaries of YouTub
 
 ![Demo](demo.gif)
 
-![Demo](screenshot1.png)
+![Demo](screenshot2.jpg)
 
 ## ✨ Features
 
