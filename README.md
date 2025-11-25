@@ -4,6 +4,8 @@ A Chrome extension + local backend that generates AI-powered summaries of YouTub
 
 ![Demo](demo.gif)
 
+(screenshot1.png)
+
 ## ✨ Features
 
 - **Hover to Summarize** - Just hover over any YouTube thumbnail for 2 seconds
