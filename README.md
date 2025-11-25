@@ -1,4 +1,4 @@
-# YouTube Video Summarizer 🎬
+# AI YouTube Video Summarizer 🎬
 
 A Chrome extension + local backend that generates AI-powered summaries of YouTube videos on hover. Just hover over any video thumbnail for 2 seconds and get an instant summary.
 
