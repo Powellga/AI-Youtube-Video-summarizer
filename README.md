@@ -1,43 +1,47 @@
-# AI YouTube Video Summarizer 🎬
+# AI YouTube Video Summarizer
 
-A Chrome extension + local backend that generates AI-powered summaries of YouTube videos on hover. Just hover over any video thumbnail for 2 seconds and get an instant summary.
-
-![Demo](demo.gif)
+A Chrome extension + local backend that generates AI-powered summaries of YouTube videos on hover. Hover over any video thumbnail and get an instant summary — then optionally fact-check it with one click.
 
 ![Demo](screenshot2.jpg)
 
-## ✨ Features
+## Features
 
-- **Hover to Summarize** - Just hover over any YouTube thumbnail for 2 seconds
-- **AI-Powered** - Uses Claude AI for intelligent, contextual summaries
-- **Works on Any Video** - Supports videos with captions (manual or auto-generated)
-- **Fast & Cached** - Summaries are cached so repeat hovers are instant
-- **Privacy-First** - Runs entirely locally, your data never leaves your machine
-- **No YouTube API Key Needed** - Uses yt-dlp for reliable transcript fetching
+- **Hover to Summarize** — Hover over any YouTube thumbnail for ~1 second to get an AI summary
+- **Fact-Check Validation** — Click "Check Validity" to have Claude Opus cross-reference the summary against the original transcript
+- **Sidebar & Recommendation Support** — Works on homepage thumbnails, search results, sidebar recommendations, and playlist panels
+- **Crash-Resilient Backend** — yt-dlp runs in isolated subprocesses so crashes don't take down the server
+- **Rate Limiting & Caching** — In-memory transcript cache and 2-second rate limiting between yt-dlp calls prevent 429 errors
+- **Duplicate Request Protection** — Concurrent requests for the same video are deduplicated
+- **Production WSGI Server** — Uses Waitress instead of Flask dev server for stability
+- **Privacy-First** — Runs entirely locally; your data never leaves your machine (except API calls to Anthropic)
+- **No YouTube API Key Needed** — Uses yt-dlp for reliable transcript fetching
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│ Chrome Extension│────▶│  Flask Backend  │────▶│   Claude API    │
+│ Chrome Extension │────▶│  Flask Backend  │────▶│   Claude API    │
 │  (Hover detect) │     │  (localhost)    │     │  (Summarize)    │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
-                               │
-                               ▼
-                        ┌─────────────────┐
-                        │     yt-dlp      │
-                        │ (Get transcript)│
-                        └─────────────────┘
+        │                       │                        │
+        │                       ▼                        │
+        │                ┌─────────────────┐             │
+        │                │ yt-dlp subprocess│             │
+        │                │ (Get transcript) │             │
+        │                └─────────────────┘             │
+        │                                                │
+        └── "Check Validity" ──────────────────▶ Claude Opus 4.6
+                                                 (Fact-check)
 ```
 
-## 📋 Requirements
+## Requirements
 
 - Windows 10/11
 - Python 3.8+
 - Chrome or Edge browser
 - Anthropic API key ([get one here](https://console.anthropic.com/))
 
-## 🚀 Installation
+## Installation
 
 ### Option 1: Easy Installer (Recommended)
 
@@ -50,8 +54,8 @@ A Chrome extension + local backend that generates AI-powered summaries of YouTub
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/Powellga/youtube-video-summarizer.git
-   cd youtube-video-summarizer
+   git clone https://github.com/Powellga/AI-Youtube-Video-summarizer.git
+   cd AI-Youtube-Video-summarizer
    ```
 
 2. **Set up Python environment:**
@@ -64,20 +68,24 @@ A Chrome extension + local backend that generates AI-powered summaries of YouTub
 
 3. **Create config file:**
    ```bash
-   # Create backend/config.json with your API key:
+   # Copy the example and add your API key:
+   cp config.example.json config.json
+   ```
+   Edit `config.json`:
+   ```json
    {
      "anthropic_api_key": "sk-ant-api03-YOUR-KEY-HERE",
-     "model": "claude-sonnet-4-20250514"
+     "model": "claude-haiku-4-5-20241022"
    }
    ```
 
 4. **Install Chrome extension:**
-   - Open Chrome → `chrome://extensions/`
+   - Open Chrome and go to `chrome://extensions/`
    - Enable "Developer mode"
    - Click "Load unpacked"
    - Select the `extension` folder
 
-## 🎯 Usage
+## Usage
 
 1. **Start the backend server:**
    ```bash
@@ -85,55 +93,71 @@ A Chrome extension + local backend that generates AI-powered summaries of YouTub
    venv\Scripts\python.exe server.py
    ```
 
-2. **Browse YouTube** - Go to youtube.com
+2. **Browse YouTube** — Go to youtube.com
 
-3. **Hover over any video thumbnail** - Wait 2 seconds
+3. **Hover over any video thumbnail** — Wait about 1 second
 
-4. **See the summary!** - A tooltip appears with the AI-generated summary
+4. **See the summary!** — A tooltip appears with the AI-generated summary
 
-## 📁 Project Structure
+5. **Fact-check it** — Click "Check Validity" in the tooltip to have Claude Opus analyze the summary's accuracy against the original transcript
+
+## Project Structure
 
 ```
-youtube-video-summarizer/
+AI-Youtube-Video-summarizer/
 ├── backend/
-│   ├── server.py          # Flask backend server
-│   ├── requirements.txt   # Python dependencies
-│   └── config.json        # Your API key (create this)
+│   ├── server.py              # Flask backend with yt-dlp subprocess isolation
+│   ├── requirements.txt       # Python dependencies
+│   └── config.example.json    # Example config (copy to config.json)
 ├── extension/
-│   ├── manifest.json      # Chrome extension manifest
-│   ├── background.js      # Service worker
-│   ├── content.js         # YouTube page injection
-│   ├── styles.css         # Tooltip styling
-│   └── icons/             # Extension icons
+│   ├── manifest.json          # Chrome extension manifest (MV3)
+│   ├── background.js          # Service worker with retry logic
+│   ├── content.js             # YouTube page injection & tooltip UI
+│   ├── styles.css             # Tooltip & validation styling
+│   └── icons/                 # Extension icons
 ├── installer/
-│   └── install.ps1        # Windows installer script
-├── INSTALL.bat            # Easy installer launcher
+│   └── install.ps1            # Windows installer script
+├── INSTALL.bat                # Easy installer launcher
 └── README.md
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 Edit `backend/config.json`:
 
 ```json
 {
   "anthropic_api_key": "sk-ant-api03-YOUR-KEY-HERE",
-  "model": "claude-sonnet-4-20250514"
+  "model": "claude-haiku-4-5-20241022"
 }
 ```
 
-**Available models:**
-- `claude-sonnet-4-20250514` - Fast, good quality (recommended)
-- `claude-opus-4-20250514` - Highest quality, slower
-- `claude-haiku-4-20250514` - Fastest, lower cost
+**Available models for summarization:**
+- `claude-haiku-4-5-20241022` — Fast, low cost (recommended for summaries)
+- `claude-sonnet-4-20250514` — Higher quality, moderate cost
 
-## 💰 Cost Estimate
+**Note:** The "Check Validity" feature always uses Claude Opus for maximum accuracy in fact-checking.
 
-- ~$0.003 per summary with Sonnet
-- Light usage (50 videos/day): ~$5/month
-- Heavy usage (200 videos/day): ~$15-20/month
+## What's New (v2.4)
 
-## 🔧 Troubleshooting
+- **Fact-Check Validation** — "Check Validity" button sends the summary + transcript to Claude Opus for cross-reference analysis with color-coded verdicts (green/yellow/red)
+- **Crash-Resilient Backend** — yt-dlp now runs in isolated subprocesses; if it crashes, the server stays up
+- **Sidebar Video Support** — Summaries now work on sidebar recommendations, playlist panels, and new YouTube layout elements
+- **Transcript Caching** — In-memory cache avoids re-fetching transcripts (especially useful when validating after summarizing)
+- **Rate Limiting** — 2-second minimum interval between yt-dlp requests prevents YouTube 429 rate limits
+- **Duplicate Request Dedup** — Multiple hover events on the same video won't trigger redundant API calls
+- **Production Server** — Switched from Flask dev server to Waitress WSGI server
+- **Persistent Tooltip** — Tooltip stays visible when you hover over it (so you can click the Validate button)
+- **Rotating Log Files** — Logs written to user home directory with 5MB rotation
+
+## Cost Estimate
+
+- ~$0.001 per summary with Haiku
+- ~$0.02 per validation with Opus
+- Light usage (50 summaries + 10 validations/day): ~$8/month
+- Heavy usage (200 summaries + 50 validations/day): ~$35/month
+
+## Troubleshooting
 
 ### Server won't start
 ```bash
@@ -144,7 +168,7 @@ python server.py
 ```
 
 ### "Extension error occurred"
-- Check that the server is running (you should see "Running on http://127.0.0.1:5000")
+- Check that the server is running (you should see "Starting with waitress on http://127.0.0.1:5000")
 - Check Chrome DevTools console for errors (F12)
 
 ### No transcript available
@@ -155,28 +179,28 @@ python server.py
 - Verify your API key is correct in `config.json`
 - Make sure you have API credits at console.anthropic.com
 
-## 🛠️ Tech Stack
+### Server crashes frequently
+- Check `~/YouTubeSummarizer_server.log` for error details
+- The server now isolates yt-dlp in subprocesses, so most crashes should be contained
 
-- **Backend:** Python, Flask, yt-dlp
-- **AI:** Anthropic Claude API
+## Tech Stack
+
+- **Backend:** Python, Flask, Waitress, yt-dlp
+- **AI:** Anthropic Claude API (Haiku for summaries, Opus for validation)
 - **Extension:** Chrome Manifest V3, vanilla JavaScript
-- **Transcript:** yt-dlp (more reliable than youtube-transcript-api)
+- **Transcript:** yt-dlp with subprocess isolation
 
-## 📝 License
+## License
 
 MIT License - feel free to use, modify, and distribute.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) - Reliable YouTube data extraction
 - [Anthropic](https://anthropic.com) - Claude AI API
-- Built with frustration and determination 😅
+- [Waitress](https://docs.pylonsproject.org/projects/waitress/) - Production WSGI server
 
-## 👤 Author
+## Author
 
 **Gregg Powell**
 - GitHub: [@Powellga](https://github.com/Powellga)
-
----
-
-⭐ If you find this useful, give it a star!
