@@ -3,26 +3,6 @@
 console.log('🎬 YouTube Summary Service - Background script loaded');
 
 const LOCAL_SERVER = 'http://localhost:5000';
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 3000; // Wait 3s between retries (gives watchdog time to restart)
-
-// Helper: wait ms
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Helper: check if server is reachable
-async function isServerUp() {
-  try {
-    const resp = await fetch(`${LOCAL_SERVER}/health`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(2000)
-    });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
 
 // Handle messages from content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -47,21 +27,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// Get summary from local server (with retries)
+// Get summary from local server
 async function handleGetSummary(videoId) {
   try {
     console.log('🎬 Requesting summary for video:', videoId);
 
-    // Check server with retries (watchdog may be restarting it)
-    let serverUp = false;
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      serverUp = await isServerUp();
-      if (serverUp) break;
-      console.log(`🎬 Server not ready, retry ${attempt}/${MAX_RETRIES} in ${RETRY_DELAY_MS/1000}s...`);
-      if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS);
-    }
+    // Check if server is running
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const healthCheck = await fetch(`${LOCAL_SERVER}/health`, {
+        method: 'GET',
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
 
-    if (!serverUp) {
+      if (!healthCheck.ok) {
+        throw new Error('Server returned error');
+      }
+    } catch (error) {
+      console.error('❌ Server health check failed:', error.name, error.message, error);
       return {
         success: false,
         error: 'YouTube Summary Service is not running.\n\nPlease start it from the system tray icon (look for the blue "YT" icon near your clock).'
