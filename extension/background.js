@@ -4,6 +4,14 @@ console.log('🎬 YouTube Summary Service - Background script loaded');
 
 const LOCAL_SERVER = 'http://localhost:5000';
 
+// Fetch with AbortController timeout (Brave-safe, no AbortSignal.timeout)
+function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
 // Handle messages from content script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getSummary') {
@@ -25,6 +33,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }));
     return true;
   }
+
+  if (request.action === 'keepAlive') {
+    sendResponse({ ok: true });
+    return false;
+  }
 });
 
 // Get summary from local server
@@ -34,13 +47,9 @@ async function handleGetSummary(videoId) {
 
     // Check if server is running
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      const healthCheck = await fetch(`${LOCAL_SERVER}/health`, {
-        method: 'GET',
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
+      const healthCheck = await fetchWithTimeout(`${LOCAL_SERVER}/health`, {
+        method: 'GET'
+      }, 3000);
 
       if (!healthCheck.ok) {
         throw new Error('Server returned error');
@@ -55,14 +64,14 @@ async function handleGetSummary(videoId) {
 
     console.log('🎬 Server is running, requesting summary...');
 
-    // Request summary from local server
-    const response = await fetch(`${LOCAL_SERVER}/summarize`, {
+    // Request summary from local server (40s timeout: 30s yt-dlp + API time)
+    const response = await fetchWithTimeout(`${LOCAL_SERVER}/summarize`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ video_id: videoId })
-    });
+    }, 40000);
 
     const data = await response.json();
 
@@ -107,7 +116,8 @@ async function handleValidateSummary(summary, videoId) {
   try {
     console.log('🔍 Requesting validation for summary, video:', videoId);
 
-    const response = await fetch(`${LOCAL_SERVER}/validate`, {
+    // 80s timeout: yt-dlp + Opus API can be slower
+    const response = await fetchWithTimeout(`${LOCAL_SERVER}/validate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -116,7 +126,7 @@ async function handleValidateSummary(summary, videoId) {
         summary: summary,
         video_id: videoId
       })
-    });
+    }, 80000);
 
     const data = await response.json();
 

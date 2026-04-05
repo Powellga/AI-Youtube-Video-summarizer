@@ -38,7 +38,7 @@ A Chrome extension + local backend that generates AI-powered summaries of YouTub
 
 - Windows 10/11
 - Python 3.8+
-- Chrome or Edge browser
+- Chrome, Brave, or Edge browser
 - Anthropic API key ([get one here](https://console.anthropic.com/))
 
 ## Installation
@@ -138,15 +138,23 @@ Edit `backend/config.json`:
 
 **Note:** The "Check Validity" feature always uses Claude Opus for maximum accuracy in fact-checking.
 
-## What's New (v2.4)
+## What's New (v2.5)
+
+- **Server stability overhaul** — Fixed server freezing after a few summarizations. Root cause: stuck yt-dlp threads would exhaust the thread pool and block all request handling
+- **Subprocess isolation with hard kill** — yt-dlp now runs via `Popen` with a 20-second timeout. On timeout, the process is forcibly killed instead of left dangling
+- **Request deduplication** — Duplicate hover events for the same video share a single subprocess instead of each blocking a server thread
+- **16 Waitress threads** — Increased from 6 to handle concurrent requests without exhaustion
+- **60-second Anthropic API timeout** — Claude API calls now have a hard timeout so they can't hang forever
+- **Content script message timeouts** — Extension no longer spins forever if the service worker dies mid-request (45s timeout for summaries, 90s for validation)
+- **Fetch timeouts in service worker** — All backend calls from the extension have explicit timeouts (Brave-compatible AbortController pattern)
+- **Continue in Claude** — After validation, click to copy full context (video URL, summary, validation) to clipboard and open claude.ai
+
+### Previous (v2.4)
 
 - **Fact-Check Validation** — "Check Validity" button sends the summary + transcript to Claude Opus for cross-reference analysis with color-coded verdicts (green/yellow/red)
-- **Crash-Resilient Backend** — yt-dlp now runs in isolated subprocesses; if it crashes, the server stays up
-- **Sidebar Video Support** — Summaries now work on sidebar recommendations, playlist panels, and new YouTube layout elements
-- **Transcript Caching** — In-memory cache avoids re-fetching transcripts (especially useful when validating after summarizing)
-- **Rate Limiting** — 2-second minimum interval between yt-dlp requests prevents YouTube 429 rate limits
-- **Duplicate Request Dedup** — Multiple hover events on the same video won't trigger redundant API calls
-- **Production Server** — Switched from Flask dev server to Waitress WSGI server
+- **Crash-Resilient Backend** — yt-dlp runs in isolated subprocesses; if it crashes, the server stays up
+- **Sidebar Video Support** — Summaries work on homepage, search results, sidebar recommendations, and playlist panels
+- **Production Server** — Waitress WSGI server instead of Flask dev server
 - **Persistent Tooltip** — Tooltip stays visible when you hover over it (so you can click the Validate button)
 - **Rotating Log Files** — Logs written to user home directory with 5MB rotation
 
@@ -179,9 +187,10 @@ python server.py
 - Verify your API key is correct in `config.json`
 - Make sure you have API credits at console.anthropic.com
 
-### Server crashes frequently
+### Server crashes or freezes
 - Check `~/YouTubeSummarizer_server.log` for error details
-- The server now isolates yt-dlp in subprocesses, so most crashes should be contained
+- The server isolates yt-dlp in killable subprocesses and deduplicates concurrent requests, so freezes from stuck yt-dlp calls should no longer occur
+- If the server stops responding, kill the process and restart - the system tray app will auto-restart it
 
 ## Tech Stack
 

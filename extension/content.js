@@ -180,15 +180,31 @@ if (window.ytSummarizerInitialized) {
       return null;
     }
 
+    function sendMessageWithTimeout(msg, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error('Request timed out - try again'));
+        }, timeoutMs);
+        chrome.runtime.sendMessage(msg, (response) => {
+          clearTimeout(timer);
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve(response);
+          }
+        });
+      });
+    }
+
     async function handleVideoHover(element) {
       if (!element) return;
-      
+
       const videoId = extractVideoId(element);
       if (!videoId) return;
-      
+
       currentVideoId = videoId;
       currentValidationText = null;
-      
+
       // Check cache first
       if (summaryCache.has(videoId)) {
         const cached = summaryCache.get(videoId);
@@ -196,29 +212,29 @@ if (window.ytSummarizerInitialized) {
         showTooltip(element, cached);
         return;
       }
-      
+
       showTooltip(element, { status: 'loading' });
-      
+
       try {
-        const response = await chrome.runtime.sendMessage({
+        const response = await sendMessageWithTimeout({
           action: 'getSummary',
           videoId: videoId
-        });
-        
-        if (response.success) {
+        }, 45000);
+
+        if (response && response.success) {
           currentSummaryText = response.data.summary;
           summaryCache.set(videoId, response.data);
           showTooltip(element, response.data);
         } else {
-          showTooltip(element, { 
-            status: 'error', 
-            message: response.error || 'Failed to get summary' 
+          showTooltip(element, {
+            status: 'error',
+            message: (response && response.error) || 'Failed to get summary'
           });
         }
       } catch (error) {
-        showTooltip(element, { 
-          status: 'error', 
-          message: 'Extension error occurred' 
+        showTooltip(element, {
+          status: 'error',
+          message: error.message || 'Extension error occurred'
         });
       }
     }
@@ -304,17 +320,17 @@ if (window.ytSummarizerInitialized) {
       }
 
       try {
-        const response = await chrome.runtime.sendMessage({
+        const response = await sendMessageWithTimeout({
           action: 'validateSummary',
           summary: currentSummaryText,
           videoId: currentVideoId
-        });
+        }, 90000);
 
-        if (response.success) {
+        if (response && response.success) {
           currentValidationText = response.data.validation;
           showValidationTooltip(response.data.validation);
         } else {
-          showValidationTooltip(null, response.error || 'Validation failed');
+          showValidationTooltip(null, (response && response.error) || 'Validation failed');
         }
       } catch (error) {
         showValidationTooltip(null, 'Extension error occurred');
