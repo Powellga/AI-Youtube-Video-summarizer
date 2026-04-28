@@ -115,6 +115,9 @@ AI-Youtube-Video-summarizer/
 │   ├── content.js             # YouTube page injection & tooltip UI
 │   ├── styles.css             # Tooltip & validation styling
 │   └── icons/                 # Extension icons
+├── systray/
+│   ├── tray_app.py            # pystray controller (start/stop server, config UI)
+│   └── requirements.txt       # pystray, Pillow, psutil
 ├── installer/
 │   └── install.ps1            # Windows installer script
 ├── INSTALL.bat                # Easy installer launcher
