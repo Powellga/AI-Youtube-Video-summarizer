@@ -103,8 +103,28 @@ def get_anthropic_client():
 
 def _run_transcript_subprocess(video_id):
     """Run yt-dlp in a separate process, kill it hard on timeout."""
+    cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+    cookies_line = f"'cookiefile': r'{cookies_path}'," if os.path.exists(cookies_path) else ''
     script = f'''
-import yt_dlp, requests, json, sys
+import yt_dlp, requests, json, sys, re, html, os
+from http.cookiejar import MozillaCookieJar
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+HEADERS = {{
+    'User-Agent': UA,
+    'Accept': '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.youtube.com/',
+    'Origin': 'https://www.youtube.com',
+}}
+COOKIES = None
+COOKIES_PATH = r'{cookies_path}'
+if os.path.exists(COOKIES_PATH):
+    try:
+        jar = MozillaCookieJar(COOKIES_PATH)
+        jar.load(ignore_discard=True, ignore_expires=True)
+        COOKIES = jar
+    except Exception:
+        pass
 ydl_opts = {{
     'writesubtitles': True,
     'writeautomaticsub': True,
@@ -115,10 +135,42 @@ ydl_opts = {{
     'socket_timeout': 10,
     'retries': 1,
     'extractor_retries': 0,
-    'http_headers': {{
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }}
+    'http_headers': {{'User-Agent': UA}},
+    {cookies_line}
 }}
+
+def parse_json3(text):
+    data = json.loads(text)
+    parts = []
+    for event in data.get('events', []):
+        for seg in event.get('segs', []) or []:
+            if 'utf8' in seg:
+                parts.append(seg['utf8'])
+    return ' '.join(parts).replace('\\n', ' ').strip()
+
+def parse_vtt_or_srv(text):
+    # Strip XML/HTML tags and timing lines; works for srv1/srv2/srv3/vtt/ttml.
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html.unescape(text)
+    lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('WEBVTT') or '-->' in line:
+            continue
+        if re.match(r'^\\d+$', line):
+            continue
+        lines.append(line)
+    return ' '.join(lines).strip()
+
+def fetch_caption(url, ext):
+    resp = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=10)
+    if resp.status_code != 200 or not resp.content:
+        raise RuntimeError(f"YouTube returned HTTP {{resp.status_code}} ({{len(resp.content)}} bytes) for {{ext}}")
+    body = resp.text
+    if ext == 'json3':
+        return parse_json3(body)
+    return parse_vtt_or_srv(body)
+
 try:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info("https://www.youtube.com/watch?v={video_id}", download=False)
@@ -126,20 +178,22 @@ try:
         if not captions:
             print(json.dumps({{"error": "No English captions available"}}))
             sys.exit(0)
+        preferred = ['json3', 'srv3', 'srv2', 'srv1', 'vtt', 'ttml']
+        captions.sort(key=lambda c: preferred.index(c.get('ext')) if c.get('ext') in preferred else 99)
+        last_err = None
         for cap in captions:
-            if cap.get('ext') == 'json3':
-                resp = requests.get(cap['url'], timeout=10)
-                data = resp.json()
-                text_parts = []
-                for event in data.get('events', []):
-                    if 'segs' in event:
-                        for seg in event['segs']:
-                            if 'utf8' in seg:
-                                text_parts.append(seg['utf8'])
-                transcript = ' '.join(text_parts).replace('\\n', ' ').strip()
-                print(json.dumps({{"transcript": transcript}}))
-                sys.exit(0)
-        print(json.dumps({{"error": "Could not parse captions"}}))
+            ext = cap.get('ext')
+            if ext not in preferred:
+                continue
+            try:
+                transcript = fetch_caption(cap['url'], ext)
+                if transcript:
+                    print(json.dumps({{"transcript": transcript}}))
+                    sys.exit(0)
+                last_err = f"empty transcript from {{ext}}"
+            except Exception as e:
+                last_err = f"{{ext}}: {{e}}"
+        print(json.dumps({{"error": last_err or "Could not parse captions"}}))
 except Exception as e:
     print(json.dumps({{"error": str(e)}}))
 '''
@@ -239,7 +293,7 @@ def health():
     return jsonify({
         'status': 'running',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.7.0'
+        'version': '2.7.1'
     })
 
 @app.route('/config', methods=['GET', 'POST'])
@@ -453,7 +507,7 @@ def test_api_key():
 
 if __name__ == '__main__':
     logging.info('='*50)
-    logging.info('Starting YouTube Summary Service v2.7.0')
+    logging.info('Starting YouTube Summary Service v2.7.1')
     logging.info(f'Log file: {LOG_FILE}')
     logging.info('='*50)
 
