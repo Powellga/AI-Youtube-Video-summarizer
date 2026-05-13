@@ -42,6 +42,27 @@ _anthropic_api_key = None
 _inflight = {}
 _inflight_lock = __import__('threading').Lock()
 
+# Transcript cache: video_id -> transcript (successful fetches only)
+# Bounded to avoid memory bloat; validation re-uses summary's transcript.
+_transcript_cache = {}
+_transcript_cache_order = []
+_transcript_cache_lock = __import__('threading').Lock()
+_TRANSCRIPT_CACHE_MAX = 200
+
+def _cache_get(video_id):
+    with _transcript_cache_lock:
+        return _transcript_cache.get(video_id)
+
+def _cache_put(video_id, transcript):
+    with _transcript_cache_lock:
+        if video_id in _transcript_cache:
+            return
+        _transcript_cache[video_id] = transcript
+        _transcript_cache_order.append(video_id)
+        while len(_transcript_cache_order) > _TRANSCRIPT_CACHE_MAX:
+            evict = _transcript_cache_order.pop(0)
+            _transcript_cache.pop(evict, None)
+
 def load_config():
     """Load configuration from file"""
     try:
@@ -146,7 +167,21 @@ except Exception as e:
             logging.error(f'yt-dlp subprocess returned empty output for {video_id}')
             return None, "No transcript data returned"
 
-        result = json.loads(output)
+        # yt-dlp may print warnings to stdout despite quiet=True; the wrapper
+        # script's JSON result is always the last line.
+        result = None
+        for line in reversed(output.splitlines()):
+            line = line.strip()
+            if line.startswith('{') and line.endswith('}'):
+                try:
+                    result = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if result is None:
+            logging.error(f'No JSON line in yt-dlp output for {video_id}: {output[-300:]}')
+            return None, "YouTube response could not be parsed (try updating yt-dlp)"
+
         if 'error' in result:
             return None, result['error']
         return result['transcript'], None
@@ -160,9 +195,15 @@ except Exception as e:
 
 
 def get_transcript(video_id):
-    """Fetch transcript with deduplication - if another request for the same video
-    is already in flight, wait for that result instead of spawning a second subprocess."""
+    """Fetch transcript with caching + deduplication. Cached transcripts skip yt-dlp
+    entirely. Otherwise: if another request for the same video is already in flight,
+    wait for that result instead of spawning a second subprocess."""
     import threading
+
+    cached = _cache_get(video_id)
+    if cached is not None:
+        logging.info(f'Cache hit for {video_id} ({len(cached)} chars)')
+        return cached, None
 
     with _inflight_lock:
         if video_id in _inflight:
@@ -183,6 +224,9 @@ def get_transcript(video_id):
     try:
         result = _run_transcript_subprocess(video_id)
         entry['result'] = result
+        transcript, error = result
+        if transcript and not error:
+            _cache_put(video_id, transcript)
         return result
     finally:
         entry['event'].set()
@@ -195,7 +239,7 @@ def health():
     return jsonify({
         'status': 'running',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.3.0'
+        'version': '2.7.0'
     })
 
 @app.route('/config', methods=['GET', 'POST'])
@@ -409,7 +453,7 @@ def test_api_key():
 
 if __name__ == '__main__':
     logging.info('='*50)
-    logging.info('Starting YouTube Summary Service v2.3.0')
+    logging.info('Starting YouTube Summary Service v2.7.0')
     logging.info(f'Log file: {LOG_FILE}')
     logging.info('='*50)
 
