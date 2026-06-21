@@ -293,7 +293,7 @@ def health():
     return jsonify({
         'status': 'running',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.7.1'
+        'version': '2.7.2'
     })
 
 @app.route('/config', methods=['GET', 'POST'])
@@ -456,11 +456,11 @@ Please analyze:
 
 Keep your response concise (3-5 sentences) and lead with the overall verdict."""
         
-        logging.info('Calling Claude Opus 4.6 for validation...')
+        logging.info('Calling Claude Opus for validation...')
 
         try:
             message = client.messages.create(
-                model='claude-opus-4-20250514',
+                model='claude-opus-4-8',
                 max_tokens=500,
                 messages=[{
                     'role': 'user',
@@ -507,7 +507,7 @@ def test_api_key():
 
 if __name__ == '__main__':
     logging.info('='*50)
-    logging.info('Starting YouTube Summary Service v2.7.1')
+    logging.info('Starting YouTube Summary Service v2.7.2')
     logging.info(f'Log file: {LOG_FILE}')
     logging.info('='*50)
 
