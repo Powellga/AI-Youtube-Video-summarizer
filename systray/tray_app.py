@@ -25,38 +25,63 @@ class ServiceController:
         self.config_file = os.path.join(os.path.dirname(__file__), '..', 'backend', 'config.json')
         
     def is_running(self):
-        """Check if the server is running"""
-        if self.process and self.process.poll() is None:
+        """Cheap liveness check: is something listening on port 5000?
+
+        Uses a 1s socket connect instead of psutil.net_connections(), which on
+        Windows needs admin and enumerates every socket on the system."""
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        try:
+            s.connect(('127.0.0.1', 5000))
             return True
-        
-        # Check if any process is listening on port 5000
-        for conn in psutil.net_connections():
-            if conn.laddr.port == 5000 and conn.status == 'LISTEN':
-                return True
-        return False
-    
+        except OSError:
+            return False
+        finally:
+            s.close()
+
+    def health_ok(self, timeout=5):
+        """Strong liveness check: does /health actually respond?
+
+        A deadlocked-but-alive server still holds the port open, so is_running()
+        would wrongly report it healthy. This catches that - if all worker
+        threads are blocked, /health won't answer and we know to restart."""
+        import urllib.request
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=timeout) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
     def start(self):
         """Start the backend server"""
         if self.is_running():
             return True, "Server is already running"
-        
+
         try:
-            # Start the Flask server as a subprocess
+            # Start the Flask server as a subprocess.
+            # CRITICAL: stdout/stderr go to DEVNULL, NOT PIPE. The server logs to
+            # stderr (StreamHandler) plus the anthropic SDK / httpx / waitress all
+            # log there too. If we PIPE without draining, the OS pipe buffer fills
+            # after a few dozen requests, the next log write blocks, and every
+            # worker thread deadlocks mid-request - the long-standing "server keeps
+            # freezing / needs constant restart" bug. The server already writes a
+            # rotating file log to ~/YouTubeSummarizer_server.log, so nothing is lost.
             self.process = subprocess.Popen(
                 [self.python_exe, self.server_script],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             )
-            
+
             # Wait a bit to see if it starts successfully
             time.sleep(2)
-            
+
             if self.is_running():
                 return True, "Server started successfully"
             else:
                 return False, "Server failed to start"
-                
+
         except Exception as e:
             return False, f"Error starting server: {str(e)}"
     
@@ -64,25 +89,46 @@ class ServiceController:
         """Stop the backend server"""
         if not self.is_running():
             return True, "Server is not running"
-        
+
         try:
+            # Terminate our own child first; force-kill if it ignores terminate
+            # (a deadlocked process won't respond to a graceful terminate).
             if self.process:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            
-            # Kill any remaining processes on port 5000
+                try:
+                    self.process.terminate()
+                    try:
+                        self.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait(timeout=5)
+                except Exception:
+                    pass
+
+            # Kill any remaining process listening on port 5000
             for proc in psutil.process_iter(['pid', 'name']):
                 try:
-                    for conn in proc.connections():
-                        if conn.laddr.port == 5000:
-                            proc.terminate()
+                    if self._listens_on_5000(proc):
+                        proc.kill()
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
-            
+
             return True, "Server stopped successfully"
-            
+
         except Exception as e:
             return False, f"Error stopping server: {str(e)}"
+
+    @staticmethod
+    def _listens_on_5000(proc):
+        """True if proc has a LISTEN socket on port 5000. Works across psutil
+        versions (Process.connections() was renamed to net_connections() in 6.0)."""
+        try:
+            conns = proc.net_connections(kind='inet')
+        except AttributeError:
+            conns = proc.connections(kind='inet')
+        for c in conns:
+            if c.laddr and c.laddr.port == 5000 and c.status == psutil.CONN_LISTEN:
+                return True
+        return False
     
     def restart(self):
         """Restart the backend server"""
@@ -97,7 +143,7 @@ class ServiceController:
         if os.path.exists(self.config_file):
             with open(self.config_file, 'r') as f:
                 return json.load(f)
-        return {'anthropic_api_key': '', 'model': 'claude-sonnet-4-20250514'}
+        return {'anthropic_api_key': '', 'model': 'claude-haiku-4-5-20251001'}
     
     def save_config(self, config):
         """Save configuration"""
@@ -153,11 +199,11 @@ class ConfigWindow:
         # Model selection
         tk.Label(self.window, text="Claude Model:", font=('Arial', 10, 'bold')).pack(pady=(20,5))
         
-        model_var = tk.StringVar(value=config.get('model', 'claude-sonnet-4-20250514'))
+        model_var = tk.StringVar(value=config.get('model', 'claude-haiku-4-5-20251001'))
         models = [
-            'claude-sonnet-4-20250514',
-            'claude-opus-4-20250514',
-            'claude-haiku-4-20250514'
+            'claude-haiku-4-5-20251001',
+            'claude-sonnet-4-6',
+            'claude-opus-4-8'
         ]
         model_combo = ttk.Combobox(self.window, textvariable=model_var, values=models, 
                                    state='readonly', width=40)
@@ -230,20 +276,31 @@ class TrayApp:
         self._watchdog_thread.start()
 
     def _watchdog(self):
-        """Monitor server health and auto-restart if it crashes"""
+        """Monitor server health and auto-restart if it crashes OR hangs.
+
+        Uses a real /health request rather than a port check, so a deadlocked
+        process (port still open, threads all blocked) gets detected and
+        restarted. Requires 2 consecutive failures so a single slow request
+        under load never triggers a needless restart."""
+        failures = 0
         while self._watchdog_running:
-            time.sleep(5)  # Check every 5 seconds
+            time.sleep(10)
             if not self._watchdog_running:
                 break
-            if not self.controller.is_running():
-                print('[Watchdog] Server not running, auto-restarting...')
-                success, msg = self.controller.start()
-                if success:
-                    print('[Watchdog] Server restarted successfully')
-                else:
-                    print(f'[Watchdog] Failed to restart: {msg}')
-                    # Wait a bit before retrying
-                    time.sleep(5)
+
+            if self.controller.health_ok():
+                failures = 0
+                continue
+
+            failures += 1
+            print(f'[Watchdog] Health check failed ({failures}/2)')
+            if failures >= 2:
+                print('[Watchdog] Server unresponsive - forcing restart...')
+                success, msg = self.controller.restart()
+                print(f'[Watchdog] Restart: {msg}')
+                failures = 0
+                # Give the fresh server time to bind before probing again
+                time.sleep(5)
         
     def create_image(self):
         """Create tray icon image"""
