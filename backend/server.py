@@ -104,7 +104,15 @@ def get_anthropic_client():
 def _run_transcript_subprocess(video_id):
     """Run yt-dlp in a separate process, kill it hard on timeout."""
     cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-    cookies_line = f"'cookiefile': r'{cookies_path}'," if os.path.exists(cookies_path) else ''
+    # yt-dlp rejects cookie files without the Netscape header, so skip empty/invalid ones
+    cookies_valid = False
+    try:
+        with open(cookies_path, 'r', encoding='utf-8', errors='ignore') as f:
+            first_line = f.readline()
+        cookies_valid = first_line.startswith('# Netscape HTTP Cookie File') or first_line.startswith('# HTTP Cookie File')
+    except OSError:
+        pass
+    cookies_line = f"'cookiefile': r'{cookies_path}'," if cookies_valid else ''
     script = f'''
 import yt_dlp, requests, json, sys, re, html, os
 from http.cookiejar import MozillaCookieJar
