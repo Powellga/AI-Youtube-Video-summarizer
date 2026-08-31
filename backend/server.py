@@ -114,7 +114,12 @@ def _run_transcript_subprocess(video_id):
         pass
     cookies_line = f"'cookiefile': r'{cookies_path}'," if cookies_valid else ''
     script = f'''
-import yt_dlp, requests, json, sys, re, html, os
+import yt_dlp, requests, json, sys, re, html, os, time
+DEADLINE = time.time() + 38  # stay under the parent's 45s hard kill
+try:
+    from curl_cffi import requests as curlreq
+except Exception:
+    curlreq = None
 from http.cookiejar import MozillaCookieJar
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 HEADERS = {{
@@ -170,14 +175,50 @@ def parse_vtt_or_srv(text):
         lines.append(line)
     return ' '.join(lines).strip()
 
+COOKIE_DICT = {{c.name: c.value for c in COOKIES}} if COOKIES else None
+
+def http_get(url):
+    # YouTube throttles caption downloads from plain-requests TLS fingerprints,
+    # often stalling them at ~0 bytes/sec, so prefer curl_cffi with Chrome
+    # impersonation and a hard per-attempt time cap.
+    if curlreq is not None:
+        return curlreq.get(url, headers=HEADERS, cookies=COOKIE_DICT,
+                           timeout=6, impersonate='chrome')
+    return requests.get(url, headers=dict(HEADERS, Connection='close'),
+                        cookies=COOKIE_DICT, timeout=(5, 7))
+
 def fetch_caption(url, ext):
-    resp = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=10)
-    if resp.status_code != 200 or not resp.content:
-        raise RuntimeError(f"YouTube returned HTTP {{resp.status_code}} ({{len(resp.content)}} bytes) for {{ext}}")
-    body = resp.text
-    if ext == 'json3':
-        return parse_json3(body)
-    return parse_vtt_or_srv(body)
+    last_exc = None
+    for attempt in range(3):
+        if time.time() >= DEADLINE:
+            break
+        try:
+            resp = http_get(url)
+            if resp.status_code != 200 or not resp.content:
+                raise RuntimeError(f"YouTube returned HTTP {{resp.status_code}} ({{len(resp.content)}} bytes) for {{ext}}")
+            body = resp.text
+            if body.lstrip().startswith('#EXTM3U'):
+                # HLS subtitle manifest: the real caption files are the URLs inside
+                seg_urls = [ln.strip() for ln in body.splitlines() if ln.strip().startswith('http')]
+                if not seg_urls:
+                    raise RuntimeError(f"empty HLS manifest for {{ext}}")
+                parts = []
+                for seg_url in seg_urls[:20]:
+                    if time.time() >= DEADLINE:
+                        raise RuntimeError('caption fetch deadline exceeded')
+                    seg = http_get(seg_url)
+                    if seg.status_code != 200:
+                        raise RuntimeError(f"HTTP {{seg.status_code}} for HLS segment ({{ext}})")
+                    parts.append(seg.text)
+                body = '\\n'.join(parts)
+            if ext == 'json3':
+                return parse_json3(body)
+            return parse_vtt_or_srv(body)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            last_exc = e
+    raise last_exc if last_exc else RuntimeError('caption fetch deadline exceeded')
 
 try:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -186,7 +227,9 @@ try:
         if not captions:
             print(json.dumps({{"error": "No English captions available"}}))
             sys.exit(0)
-        preferred = ['json3', 'srv3', 'srv2', 'srv1', 'vtt', 'ttml']
+        # vtt/srt first: YouTube stalls json3/srv* downloads (unauthenticated)
+        # since 2026-08-31, while vtt/srt/ttml still download normally.
+        preferred = ['vtt', 'srt', 'ttml', 'json3', 'srv3', 'srv2', 'srv1']
         captions.sort(key=lambda c: preferred.index(c.get('ext')) if c.get('ext') in preferred else 99)
         last_err = None
         for cap in captions:
@@ -213,11 +256,11 @@ except Exception as e:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
         try:
-            stdout, stderr = proc.communicate(timeout=20)
+            stdout, stderr = proc.communicate(timeout=45)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-            logging.error(f'yt-dlp subprocess killed after 20s for {video_id}')
+            logging.error(f'yt-dlp subprocess killed after 45s for {video_id}')
             return None, "Transcript fetch timed out. Please try again."
 
         if proc.returncode != 0:

@@ -64,14 +64,14 @@ async function handleGetSummary(videoId) {
 
     console.log('🎬 Server is running, requesting summary...');
 
-    // Request summary from local server (40s timeout: 30s yt-dlp + API time)
+    // Request summary from local server (60s timeout: 45s yt-dlp retry budget + API time)
     const response = await fetchWithTimeout(`${LOCAL_SERVER}/summarize`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ video_id: videoId })
-    }, 40000);
+    }, 60000);
 
     const data = await response.json();
 
